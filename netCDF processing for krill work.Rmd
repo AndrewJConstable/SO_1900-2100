@@ -1,0 +1,164 @@
+---
+title: "Growth_Environment_Processing - SST"
+author: "Andrew Constable"
+date: "17/05/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(ncdf4)
+library(here)
+
+
+# functions
+
+# Haversine great circle distance
+dist_great_circle<-function(lon1,lon2,lat1,lat2){
+     earthR <- 6371E3  # metres
+     c1 <- lat1 * pi/180 # c and Lambda in radians
+     c2 <- lat2 * pi/180
+     dc <- (lat2-lat1) * pi/180
+     dLambda <- (lon2-lon1) * pi/180
+     a <- (sin(dc/2))^2 + cos(c1) * cos(c2) * (sin(dLambda/2))^2
+     c <- 2 * atan2(sqrt(a), sqrt(1-a))
+     d <- earthR * c # in metres
+     return(d/1000)
+     } # end function
+
+LatLonGridCellArea<-function(LonLat,Res){
+  ResHalf<-Res/2
+  Lon1<-LonLat[1]-ResHalf[1]
+  Lon2<-LonLat[1]+ResHalf[1]
+  Lat_E<-abs(LonLat[2])-ResHalf[2] # equatorial side
+  Lat_P<-abs(LonLat[2])+ResHalf[2] # polar side
+  
+  Zonal_km_E     <-dist_great_circle(Lon1,Lon2,Lat_E,Lat_E)
+  Zonal_km_P     <-dist_great_circle(Lon1,Lon2,Lat_P,Lat_P)
+  Meridional_km  <-(Lat_P-Lat_E)*60*1.852
+  
+  Area<-Meridional_km*(Zonal_km_E+Zonal_km_P)/2
+  return(Area)
+  } # end function
+
+TimeSeries_from_nc<-function(lon,lat,ncData,SampleAreaCoords,SampleAreaRes){
+  
+subNC_X<-(lon>SampleAreaCoords[1] & lon<SampleAreaCoords[2])
+subNC_Y<-(lat<SampleAreaCoords[3] & lat>SampleAreaCoords[4])
+subNC<-ncData[subNC_X,subNC_Y,]
+subNC_lon<-lon[subNC_X]
+subNC_lat<-lat[subNC_Y]
+
+# generate matrix of areas for calculating area-weighted mean chlorophyll density
+CellLonLat<-cbind(rep(subNC_lon,length(subNC_lat)),as.vector(apply(as.matrix(subNC_lat,ncol=1),1,function(x,n){rep(x,n)},length(subNC_lon))))
+AreaLonLat<-apply(CellLonLat,1,LatLonGridCellArea,SampleAreaRes)
+
+TotalArea<-sum(AreaLonLat)
+
+print("Sample Area Details")
+print("Coords")
+print(SampleAreaCoords)
+print(paste("Total Area = ",TotalArea," km2",sep=""))
+
+TS<-apply(subNC,3,function(d,a,aT){sum(as.vector(d)*as.vector(a))/aT},AreaLonLat,TotalArea)
+return(TS)
+} # end 
+
+```
+
+
+# Sea Surface Temperature
+
+Processing NetCDF files from NOAA
+
+```{r}
+ncpath<-"/Users/andreworca/Desktop/_wAAD/_r/Krill/Data/NOAA - SST-Sea Ice/"
+ncname<-"NOAA_sst_monthly.nc"
+ncfname<-paste(ncpath,ncname,sep="")
+ncin <- nc_open(ncfname)
+#print(ncin)
+
+# read in dimensions
+
+lon<-ncvar_get(ncin,"X")
+nlon<-dim(lon)
+lat<-ncvar_get(ncin,"Y")
+nlat<-dim(lat)
+t<-ncvar_get(ncin,"T")
+nt<-dim(t)
+tunits<-ncatt_get(ncin,"T","units") # months since 19600101
+# read in variable array
+ncVar<-"sst"
+ncData<-ncvar_get(ncin,ncVar)
+NAvalue<-ncatt_get(ncin,ncVar,"_FillValue")
+ncVarUnits<-ncatt_get(ncin,ncVar,"units")
+nc_close(ncin)
+
+# in description, variable array is
+#   float sst[X,Y,T]
+```
+
+
+```{r}
+# Identify boundaries of Subject areas and other characteristics
+
+# convert t to years
+Yr<-t/12+1960
+Mth<-Yr-floor(Yr)
+Month<-sort(unique(Mth))
+
+SubjectArea<-list(
+         "SG" = list( Name    = "South Georgia"
+                     ,Coords  = c((360-41)  # westerly longitude
+                                 ,(360-37)  # easterly longitude
+                                 ,(-51)     # northerly latitude
+                                 ,(-53))    # southerly latitude
+                     ,Res     = c(1  # resolution in degrees longitude
+                                 ,1) # resolution in degrees latitude
+                     ) # end SG
+        ,"EI" = list( Name    = "Elephant Island"
+                     ,Coords  = c((360-55)  # westerly longitude
+                                 ,(360-52)  # easterly longitude
+                                 ,(-61)     # northerly latitude
+                                 ,(-63))    # southerly latitude
+                     ,Res     = c(1  # resolution in degrees longitude
+                                 ,1) # resolution in degrees latitude
+                     ) # end SG
+         ) # end list
+
+TS<-Yr
+TSmeanMonth<-Month
+for (i in (1:length(SubjectArea))){
+   TS<-cbind(TS,TimeSeries_from_nc(lon,lat,ncData,SubjectArea[[i]]$Coords,SubjectArea[[i]]$Res))
+   TSmeanMonth<-cbind(TSmeanMonth,apply(as.matrix(Month,ncol=1),1,function(x,d,t){mean(d[t==x])},TS[,(i+1)],Mth))
+   } # end do loop on SubjectAreas
+
+dimnames(TS)[[2]]<-c("Yr",names(SubjectArea))
+dimnames(TSmeanMonth)[[2]]<-c("Month",names(SubjectArea))
+
+saveRDS(TS,"SST_TS.rds")
+saveRDS(TSmeanMonth,"SST_TS_MeanMonthly.rds")
+
+plot_TS<-"SG"
+plot(NA,NA,xlim=c(1980,2020),ylim=c(min(TS[,plot_TS]),max(TS[,plot_TS])),xlab="Year",ylab="SST (oC)",main=SubjectArea[[plot_TS]]$Name)
+lines(TS[,"Yr"],TS[,plot_TS])
+
+plot_TS<-"EI"
+plot(NA,NA,xlim=c(1980,2020),ylim=c(min(TS[,plot_TS]),max(TS[,plot_TS])),xlab="Year",ylab="SST (oC)",main=SubjectArea[[plot_TS]]$Name)
+lines(TS[,"Yr"],TS[,plot_TS])
+
+
+```
+
+```{r}
+# mean time series by month
+plot(NA,NA,xlim=c(0,1),ylim=c(-2,5),xlab="Time (years)",ylab="SST (oC)",main="Mean monthly SST")
+lines(TSmeanMonth[,"Month"],TSmeanMonth[,"SG"],col="black")
+lines(TSmeanMonth[,"Month"],TSmeanMonth[,"EI"],col="red")
+```
+
+

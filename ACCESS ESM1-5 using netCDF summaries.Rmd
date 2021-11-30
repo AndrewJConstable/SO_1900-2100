@@ -1,0 +1,250 @@
+---
+title: "Processing ACCESS ESM1.5 Summaries in netCDF files"
+author: "Andrew Constable"
+date: "29/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+
+```{r}
+library(ncdf4)
+library(tidyverse)
+library(raster)
+library(here)
+
+```
+
+# Data
+
+```{r SST_files, echo=FALSE}
+pathSST<-"/Users/andreworca/Desktop/_wAAD/_r/MEASO/ACCESS/SO_1900-2100/Temperature/Means/"
+filesSST<-c(
+    "MonthlyMeans_1900-1909.nc"
+   ,"MonthlyMeans_1910-1919.nc"
+   ,"MonthlyMeans_1920-1929.nc"
+   ,"MonthlyMeans_1930-1939.nc"
+   ,"MonthlyMeans_1940-1949.nc"
+   ,"MonthlyMeans_1950-1959.nc"
+   ,"MonthlyMeans_1960-1969.nc"
+   ,"MonthlyMeans_1970-1979.nc"
+   ,"MonthlyMeans_1980-1989.nc"
+   ,"MonthlyMeans_1990-1999.nc"
+   ,"MonthlyMeans_2000-2009.nc"
+   ,"MonthlyMeans_2010-2014.nc"
+   ,"MonthlyMeans_2015-2024.nc"
+   ,"MonthlyMeans_2025-2034.nc"
+   ,"MonthlyMeans_2035-2044.nc"
+   ,"MonthlyMeans_2045-2054.nc"
+   ,"MonthlyMeans_2055-2064.nc"
+   ,"MonthlyMeans_2065-2074.nc"
+   ,"MonthlyMeans_2075-2084.nc"
+   ,"MonthlyMeans_2085-2094.nc"
+   ,"MonthlyMeans_2095-2100.nc"
+   ) # end file list
+pathSIC<-"/Users/andreworca/Desktop/_wAAD/_r/MEASO/ACCESS/SO_1900-2100/SIC/Means/"
+filesSIC<-c(
+    "MonthlyMeans_SIC_1850-2014.nc"
+   ,"MonthlyMeans_SIC_2015-2100.nc"
+) # end file list
+```
+
+
+Processing NetCDF files from Denisse
+
+```{r}
+ncfname<-paste(pathSST,filesSST[1],sep="")
+ncin <- nc_open(ncfname)
+print(ncin)
+
+# read in dimensions
+
+lon<-ncvar_get(ncin,"longitude")
+nlon<-dim(lon)
+lat<-ncvar_get(ncin,"latitude")
+nlat<-dim(lat)
+depth<-ncvar_get(ncin,"lev")
+ndepth<-dim(depth)
+t<-ncvar_get(ncin,"time")
+nt<-dim(t)
+tunits<-ncatt_get(ncin,"time","units") # months since 19600101
+# read in variable array
+ncVar<-"bigthetao"
+ncData<-ncvar_get(ncin,ncVar)
+NAvalue<-ncatt_get(ncin,ncVar,"_FillValue")[[2]]
+ncVarUnits<-ncatt_get(ncin,ncVar,"units")
+nc_close(ncin)
+
+# in description, variable array is
+#   float bigthetao[longitude,latitude,lev,time]
+```
+
+
+Dates (days since 1850-01-01 using proleptic_gregorian calendar)
+
+```{r echo=FALSE}
+library(lubridate)
+Date<-as.Date(t,origin="1850-01-01")
+Year <-year(Date)
+Month<-month(Date)
+Day  <-day(Date)
+dfDates<-data.frame(t,Date,Year,Month,Day)
+rm("Year","Month","Day")
+detach("package:lubridate")
+
+```
+
+
+```{r echo=FALSE}
+# regrid ACCESS grid - latitudes are irregular
+
+# using regridding function in Akima (2017, 20221)
+
+library(akima)
+
+# step 1 - generate vectors of input grid
+Xmin <- (-180)
+Xmax <- 180
+Xint <- 0.1
+Xout_unique=seq((Xmin+Xint/2),(Xmax-Xint/2),Xint)
+Ymin <- (-78)
+Ymax <- (-30)
+Yint <- 0.1
+Yout_unique=seq((Ymin+Yint/2),(Ymax-Yint/2),Yint)
+
+Xin<-as.vector(rep(lon,nlat))
+Xout<-rep(Xout_unique,length(Yout_unique))
+Yin<-as.vector(sapply(lat,function(y,n){rep(y,n)},nlon))
+Yout<-sapply(Yout_unique,function(y,n){rep(y,n)},length(Xout_unique))
+
+Zin<-as.vector(ncData[,,12])
+Zin[is.na(Zin)]<-NAvalue
+Grid<-interpp(Xin,Yin,Zin,xo=Xout,yo=Yout)
+Grid<-as.data.frame(Grid)
+# values influenced by missing values to be made NA (not including those already NA)
+GridNA<-!is.na(Grid[,3])
+GridNA<-GridNA & Grid[,3]>30
+Grid[GridNA,3]<-NA
+
+dfr<-rasterFromXYZ(Grid)
+plot(dfr)
+
+
+
+library(ggplot2)
+library(sf)
+
+# projection of netCDF data:  EPSG:4326 (WGS84) 
+
+
+my_theme <- theme_bw() + theme(panel.ontop=TRUE, panel.background=element_blank())
+my_cols <- scale_color_distiller(palette='Spectral')
+my_fill <- scale_fill_distiller(palette='Spectral')
+
+Lon<-Xin
+Lat<-Yin
+SST<-as.vector(Zin)
+SST[SST==NAvalue]<-NA
+pd<-data.frame(Lon,Lat,SST)
+
+pd_sf = st_as_sf(pd, coords = c("Lon", "Lat"), crs = 4326)
+plot(pd_sf)
+
+#Really unprojected square plot:
+p<-ggplot(pd, aes(y=Lat, x=Lon, fill=SST)) + geom_tile() + my_theme + my_fill+coord_map(projection="lambert",xlim=c(-180,180),ylim=c(-80,-30))
+
+
+
+library(raster)
+
+p1<-ggplot()
+p1<-p1+geom_raster(data = pd, aes(x="Lon",y="Lat",fill="SST"),)
+
+
+# use SOmap to plot
+
+library(SOmap)
+
+
+
+# generate a polar projection of the longitude-latitude combination, 
+# thereby indexing each cell of the matrix for use in the animation
+
+
+
+
+# plotting as a brick using raster
+# https://rpubs.com/markpayne/358146
+
+library(raster)
+tsSST<-brick(ncfname)
+print(tsSST)
+plot(tsSST)
+
+```
+
+
+
+```{r}
+# Identify boundaries of Subject areas and other characteristics
+
+# convert t to years
+Yr<-t/12+1960
+Mth<-Yr-floor(Yr)
+Month<-sort(unique(Mth))
+
+SubjectArea<-list(
+         "SG" = list( Name    = "South Georgia"
+                     ,Coords  = c((360-41)  # westerly longitude
+                                 ,(360-37)  # easterly longitude
+                                 ,(-51)     # northerly latitude
+                                 ,(-53))    # southerly latitude
+                     ,Res     = c(1  # resolution in degrees longitude
+                                 ,1) # resolution in degrees latitude
+                     ) # end SG
+        ,"EI" = list( Name    = "Elephant Island"
+                     ,Coords  = c((360-55)  # westerly longitude
+                                 ,(360-52)  # easterly longitude
+                                 ,(-61)     # northerly latitude
+                                 ,(-63))    # southerly latitude
+                     ,Res     = c(1  # resolution in degrees longitude
+                                 ,1) # resolution in degrees latitude
+                     ) # end SG
+         ) # end list
+
+TS<-Yr
+TSmeanMonth<-Month
+for (i in (1:length(SubjectArea))){
+   TS<-cbind(TS,TimeSeries_from_nc(lon,lat,ncData,SubjectArea[[i]]$Coords,SubjectArea[[i]]$Res))
+   TSmeanMonth<-cbind(TSmeanMonth,apply(as.matrix(Month,ncol=1),1,function(x,d,t){mean(d[t==x])},TS[,(i+1)],Mth))
+   } # end do loop on SubjectAreas
+
+dimnames(TS)[[2]]<-c("Yr",names(SubjectArea))
+dimnames(TSmeanMonth)[[2]]<-c("Month",names(SubjectArea))
+
+saveRDS(TS,"SST_TS.rds")
+saveRDS(TSmeanMonth,"SST_TS_MeanMonthly.rds")
+
+plot_TS<-"SG"
+plot(NA,NA,xlim=c(1980,2020),ylim=c(min(TS[,plot_TS]),max(TS[,plot_TS])),xlab="Year",ylab="SST (oC)",main=SubjectArea[[plot_TS]]$Name)
+lines(TS[,"Yr"],TS[,plot_TS])
+
+plot_TS<-"EI"
+plot(NA,NA,xlim=c(1980,2020),ylim=c(min(TS[,plot_TS]),max(TS[,plot_TS])),xlab="Year",ylab="SST (oC)",main=SubjectArea[[plot_TS]]$Name)
+lines(TS[,"Yr"],TS[,plot_TS])
+
+
+```
+
+```{r}
+# mean time series by month
+plot(NA,NA,xlim=c(0,1),ylim=c(-2,5),xlab="Time (years)",ylab="SST (oC)",main="Mean monthly SST")
+lines(TSmeanMonth[,"Month"],TSmeanMonth[,"SG"],col="black")
+lines(TSmeanMonth[,"Month"],TSmeanMonth[,"EI"],col="red")
+```
+
+

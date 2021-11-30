@@ -1,0 +1,212 @@
+---
+title: "Processing ACCESS ESM1.5 Summaries in netCDF files"
+author: "Andrew Constable"
+date: "29/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+
+```{r}
+library(ncdf4)
+library(tidyverse)
+library(raster)
+library(here)
+
+```
+
+# Data
+
+```{r SST_files, echo=FALSE}
+pathSST<-"/Users/andreworca/Desktop/_w/_r/MEASO/ACCESS/SO_1900-2100/Temperature/Means/"
+filesSST<-c(
+    "MonthlyMeans_1900-1909.nc"
+   ,"MonthlyMeans_1910-1919.nc"
+   ,"MonthlyMeans_1920-1929.nc"
+   ,"MonthlyMeans_1930-1939.nc"
+   ,"MonthlyMeans_1940-1949.nc"
+   ,"MonthlyMeans_1950-1959.nc"
+   ,"MonthlyMeans_1960-1969.nc"
+   ,"MonthlyMeans_1970-1979.nc"
+   ,"MonthlyMeans_1980-1989.nc"
+   ,"MonthlyMeans_1990-1999.nc"
+   ,"MonthlyMeans_2000-2009.nc"
+   ,"MonthlyMeans_2010-2014.nc"
+   ,"MonthlyMeans_2015-2024.nc"
+   ,"MonthlyMeans_2025-2034.nc"
+   ,"MonthlyMeans_2035-2044.nc"
+   ,"MonthlyMeans_2045-2054.nc"
+   ,"MonthlyMeans_2055-2064.nc"
+   ,"MonthlyMeans_2065-2074.nc"
+   ,"MonthlyMeans_2075-2084.nc"
+   ,"MonthlyMeans_2085-2094.nc"
+   ,"MonthlyMeans_2095-2100.nc"
+   ) # end file list
+pathSIC<-"/Users/andreworca/Desktop/_wAAD/_r/MEASO/ACCESS/SO_1900-2100/SIC/Means/"
+filesSIC<-c(
+    "MonthlyMeans_SIC_1850-2014.nc"
+   ,"MonthlyMeans_SIC_2015-2100.nc"
+) # end file list
+```
+
+
+Processing NetCDF files from Denisse
+
+```{r}
+ncfname<-paste(pathSST,filesSST[SSTi],sep="")
+ncin <- nc_open(ncfname)
+print(ncin)
+
+# read in dimensions
+
+lon<-ncvar_get(ncin,"longitude")
+nlon<-dim(lon)
+lat<-ncvar_get(ncin,"latitude")
+nlat<-dim(lat)
+depth<-ncvar_get(ncin,"lev")
+ndepth<-dim(depth)
+t<-ncvar_get(ncin,"time")
+nt<-dim(t)
+tunits<-ncatt_get(ncin,"time","units") # months since 19600101
+# read in variable array
+ncVar<-"bigthetao"
+ncData<-ncvar_get(ncin,ncVar)
+NAvalue<-ncatt_get(ncin,ncVar,"_FillValue")[[2]]
+ncVarUnits<-ncatt_get(ncin,ncVar,"units")
+nc_close(ncin)
+
+# in description, variable array is
+#   float bigthetao[longitude,latitude,lev,time]
+```
+
+
+Dates (days since 1850-01-01 using proleptic_gregorian calendar)
+
+```{r echo=FALSE}
+library(lubridate)
+Date<-as.Date(t,origin="1850-01-01")
+Year <-year(Date)
+Month<-month(Date)
+Day  <-day(Date)
+dfDates<-data.frame(t,Date,Year,Month,Day)
+rm("Year","Month","Day")
+detach("package:lubridate")
+
+```
+
+
+```{r echo=FALSE}
+
+# code from Denisse
+SSTi<-length(filesSST)
+file_path<-paste(pathSST,filesSST[SSTi],sep="")
+
+sst <- brick(file_path, stopIfNotEqualSpaced = F)
+
+
+# Polar projection data (Optional) -----------------------------------------------
+#Reproject to South Polar Stereographic (EPSG:3976)
+#Define projection
+south_stereo <- "+proj=stere +lat_0=-90 +lat_ts=-70 +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
+
+#Reproject raster brick
+sst_reproj <- projectRaster(sst, crs =south_stereo)
+
+
+# Plotting data -----------------------------------------------------------
+#Base R option
+# plot(sst_reproj$X2100.01.16)
+# plot(sst$X2100.01.16)
+
+#ggplot option - Requires data to be transformed into a data frame first
+# sst_df <- as.data.frame(sst$X2100.01.16, xy = T)
+# sst_df %>% 
+#  ggplot(aes(x, y, fill = X2100.01.16))+
+#  geom_raster()+
+#  scale_fill_gradient2(low = "#2c7bb6", mid = "#f7f7f7", 
+#                       high = "#ca0020", na.value = "#b6aca0")+
+#  theme_minimal()+
+#  labs(fill = "SST")
+
+sst_df_reproj <- as.data.frame(sst_reproj$X2100.01.16, xy = T)
+
+library(scales)
+
+sst_df_reproj %>% 
+  ggplot(aes(x, y, fill = X2100.01.16))+
+  geom_raster()+
+  scale_fill_gradientn(
+      colours=c("#2c7bb6","#f7f7f7","#ca0020","black","black")
+     ,values=rescale(c(-2,2,4,8,30),to = c(0,1), from=c(-2,30))
+     ,na.value = "white") +
+  theme_light()+
+  labs(fill = "SST")
+```
+
+
+# Sea Ice Concentration
+
+```{r echo=FALSE}
+SICi=2
+ncfname<-paste(pathSIC,filesSIC[SICi],sep="")
+ncin <- nc_open(ncfname)
+file_path<-paste(pathSIC,filesSIC[SICi],sep="")
+
+sic <- brick(file_path, stopIfNotEqualSpaced = F)
+
+
+# Polar projection data (Optional) -----------------------------------------------
+#Reproject to South Polar Stereographic (EPSG:3976)
+#Define projection
+south_stereo <- "+proj=stere +lat_0=-90 +lat_ts=-70 +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
+
+#Reproject raster brick
+sic_reproj <- projectRaster(sic, crs =south_stereo)
+
+
+sic_df_reproj <- as.data.frame(sic_reproj$X2100.01.16, xy = T)
+SICmin<-55
+# reduce data to only 75% to 100%
+# sic_df_reproj[sic_df_reproj[,3]<75,3]<-NA
+sic_df_reproj %>% 
+  ggplot(aes(x, y, fill = X2100.01.16))+
+  geom_raster()+
+  scale_fill_gradientn(
+      colours=c("black","black","#2c7bb6","blue","darkblue")
+     ,values=rescale(c(-2,(SICmin-0.1),SICmin,85,100),to = c(0,1), from=c(0,100))
+#     ,na.value = "black"
+     ) + theme_light()+
+  labs(fill = "SIC")
+```
+
+# combined
+
+```{r echo=FALSE}
+pMerge<-merge(sst_df_reproj,sic_df_reproj,by=c("x","y"))
+SST_NA<-is.na(pMerge[,3])
+SIC_NA<- is.na(pMerge[,4])
+
+pMerge[(!SST_NA & pMerge[,3]>8),3]<-(-10)
+pMerge[(!SIC_NA & pMerge[,4]<SICmin),4]<-200
+
+MergeSIC<- !(pMerge[,4]==200) & !SIC_NA
+pMerge[MergeSIC,3] <- pMerge[MergeSIC,4]
+pMerge<-pMerge[,c(1:3)]
+
+names(pMerge)<-c("x","y","Data")
+pMerge %>% 
+  ggplot(aes(x, y, fill = Data))+
+  geom_raster()+
+  scale_fill_gradientn(
+      colours=c("black","black","#2c7bb6","#f7f7f7","#ca0020","black","black","blue","darkblue","darkblue")
+     ,values=rescale(c(-10,-2.1,-2,2,4,8,74.9,75,90,100),to = c(0,1), from=c(-11,100))
+#     ,na.value = "black"
+     ) +
+  theme_light()+  labs(fill = "SST")
+
+```
+
